@@ -1,4 +1,4 @@
-# GIS/RS 数据格式转换（gis-format-converter）
+# GIS数据格式转换（gis-format-converter）
 
 > 把 GIS/遥感数据从格式 A 转成格式 B，转完给你**核对结论** + **地图预览**。
 
