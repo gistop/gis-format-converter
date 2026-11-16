@@ -3,7 +3,7 @@ name: gis-format-converter
 display_name: GIS数据格式转换
 display_name_en: GIS/RS Format Converter
 description: GIS/RS 数据格式转换：矢量与栅格数据的格式转换（矢量↔矢量、栅格↔栅格，不做矢量↔栅格互转）。矢量（GeoJSON、Shapefile、KML/KMZ、GPX、CSV、GPKG、TopoJSON、WKT、ArcGIS REST），栅格（GeoTIFF、COG、ENVI、HDF、IMG、PNG/JPG 世界文件），支持重投影（WGS84/CGCS2000/UTM/3857）、栅格重采样、波段提取合并、GCJ-02 纠偏，转换后给行数/字段/坐标核对结论并生成地图预览（卫星底图/MapLibre 自动分档，样式透明度可调）。凡用户提到 shp、geojson、kml、gpkg、gpx、tif、tiff、cog、envi、hdf、img、dem、遥感影像、卫星数据、波段、坐标系转换、火星坐标、重投影、ArcGIS/QGIS/ENVI/ERDAS 数据处理、矢量/栅格格式转换等场景，即使没说"格式转换"也应使用本技能。
-description_zh: GIS/遥感数据格式转换：GeoJSON、SHP、KML、GPKG、GPX、GeoTIFF、COG、ENVI、HDF、IMG 等，含重投影、重采样、波段处理与 GCJ-02 纠偏，转换后自动出地图预览。
+description_zh: GIS/遥感数据从格式 A 转成格式 B，支持 GeoJSON、SHP、KML、GPKG、GPX、GeoTIFF、COG、ENVI、HDF、IMG 等，含重投影、重采样、波段处理与 GCJ-02 纠偏，转换后自动出地图预览。
 description_en: Convert GIS/RS vector and raster formats (GeoJSON, SHP, KML, GPKG, GPX, GeoTIFF, COG, ENVI, HDF, IMG) with reprojection, resampling, band handling, GCJ-02 correction, and automatic map preview.
 examples_zh:
 - "把这个 shp 转成 GeoJSON，转换完给我看下地图"
