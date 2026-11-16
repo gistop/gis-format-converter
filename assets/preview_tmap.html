@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<!--
+  模板：标准档（GeoJSON < 10MB 且要素数 < 20000）
+  底图：腾讯地图 GL JS 卫星/标准（白名单合规源），WorkBuddy 本地 key 代理，前端零 key。
+        __WB_HTTP_PORT__ / __WB_TMAP_SECRET__ 为运行时占位符，保留原样勿改。
+  坐标：注入数据为 WGS84，模板内自动 GCJ-02 显示纠偏（仅显示层，源文件不动）。
+  样式：图层面板按点/线/面分区，颜色/透明度/尺寸/线宽实时调整（updateStyles）。
+  注入约定：make_preview.py 只替换 __TITLE__ / __GEOJSON_DATA__。
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%;
+    font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .bar { height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+    background: #fff; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .bar .title { font-size: 14px; font-weight: 600; color: #111827;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
+  .bar .meta { font-size: 12px; color: #6b7280; display: flex; gap: 8px; align-items: center;
+    white-space: nowrap; overflow: hidden; flex: 1; }
+  .bar .spacer { flex: 1; }
+  .tbtn { border: 1px solid #d1d5db; background: #fff; color: #374151; font-size: 12px;
+    padding: 4px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .tbtn.on { background: #111827; border-color: #111827; color: #fff; }
+  .switch { display: flex; border: 1px solid #d1d5db; border-radius: 6px; overflow: hidden; }
+  .switch button { border: 0; background: #fff; color: #6b7280; font-size: 12px;
+    padding: 4px 12px; cursor: pointer; }
+  .switch button.on { background: #111827; color: #fff; }
+  #map { width: 100%; height: calc(100vh - 48px); }
+
+  /* ---- 图层样式面板 ---- */
+  .panel { position: absolute; top: 60px; right: 12px; z-index: 1000; width: 232px;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; }
+  .panel.show { display: block; }
+  .panel h3 { margin: 0; padding: 10px 14px 8px; font-size: 12px; font-weight: 600;
+    color: #111827; border-bottom: 1px solid #f3f4f6; letter-spacing: .02em; }
+  .sec { padding: 8px 14px 10px; border-bottom: 1px solid #f3f4f6; }
+  .sec:last-child { border-bottom: 0; }
+  .sec .name { font-size: 11px; color: #6b7280; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; }
+  .sec .name .geom { display: inline-block; width: 10px; height: 10px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: #4b5563; }
+  .row label { width: 44px; flex: none; }
+  .row input[type=color] { width: 26px; height: 22px; padding: 0; border: 1px solid #d1d5db;
+    border-radius: 4px; background: #fff; cursor: pointer; flex: none; }
+  .row input[type=range] { flex: 1; height: 3px; accent-color: #111827; min-width: 0; }
+  .row .val { width: 34px; text-align: right; color: #9ca3af; font-variant-numeric: tabular-nums; flex: none; }
+
+  .pt { border-collapse: collapse; }
+  .pt td { padding: 2px 10px 2px 0; max-width: 260px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  .pt td.k { color: #6b7280; }
+</style>
+<script type="text/javascript">
+  window._TMapSecurityConfig = {
+    serviceHost: 'http://127.0.0.1:__WB_HTTP_PORT__/_TMapService/_wbt/__WB_TMAP_SECRET__',
+  };
+</script>
+<script src="https://map.qq.com/api/gljs?v=1.exp"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="title">__TITLE__</div>
+  <div class="meta" id="meta"><span>加载中…</span></div>
+  <div class="spacer"></div>
+  <button class="tbtn" id="btnStyle" style="display:none">图层样式</button>
+  <div class="switch" id="baseSwitch" style="display:none">
+    <button id="btnSat" class="on">卫星</button><button id="btnRoad">标准</button>
+  </div>
+</header>
+<div id="map"></div>
+
+<aside class="panel" id="stylePanel">
+  <h3>图层样式</h3>
+  <div id="panelBody"></div>
+</aside>
+
+<script>
+var DATA = __GEOJSON_DATA__;
+
+/* ---------- WGS84 -> GCJ-02 显示纠偏（公开经验公式，仅显示层） ---------- */
+var _A = 6378245.0, _EE = 0.00669342162296594323;
+function _delta(lng, lat) {
+  var dlng = 300.0 + lng + 2.0*lat + 0.1*lng*lng + 0.1*lng*lat + 0.1*Math.sqrt(Math.abs(lng))
+    + (20.0*Math.sin(6.0*lng*Math.PI) + 20.0*Math.sin(2.0*lng*Math.PI))*2.0/3.0
+    + (20.0*Math.sin(lng*Math.PI) + 40.0*Math.sin(lng/3.0*Math.PI))*2.0/3.0
+    + (150.0*Math.sin(lng/12.0*Math.PI) + 300.0*Math.sin(lng/30.0*Math.PI))*2.0/3.0;
+  var dlat = -100.0 + 2.0*lng + 3.0*lat + 0.2*lat*lat + 0.1*lng*lat + 0.2*Math.sqrt(Math.abs(lng))
+    + (20.0*Math.sin(6.0*lng*Math.PI) + 20.0*Math.sin(2.0*lng*Math.PI))*2.0/3.0
+    + (20.0*Math.sin(lat*Math.PI) + 40.0*Math.sin(lat/3.0*Math.PI))*2.0/3.0
+    + (160.0*Math.sin(lat/12.0*Math.PI) + 320.0*Math.sin(lat*Math.PI/30.0))*2.0/3.0;
+  return [dlng, dlat];
+}
+function _inChina(lng, lat) {
+  return lng >= 72.004 && lng <= 137.8347 && lat >= 0.8293 && lat <= 55.8271;
+}
+function wgs2gcj(lng, lat) {
+  if (!_inChina(lng, lat)) return [lng, lat];
+  var d = _delta(lng - 105.0, lat - 35.0);
+  var rl = lat / 180.0 * Math.PI;
+  var magic = 1 - _EE * Math.sin(rl) * Math.sin(rl);
+  var sq = Math.sqrt(magic);
+  var dlat = (d[1] * 180.0) / ((_A * (1 - _EE)) / (magic * sq) * Math.PI);
+  var dlng = (d[0] * 180.0) / (_A / sq * Math.cos(rl) * Math.PI);
+  return [lng + dlng, lat + dlat];
+}
+function conv(c) {
+  if (typeof c[0] === "number") return wgs2gcj(c[0], c[1]);
+  return c.map(conv);
+}
+
+/* ---------- 工具 ---------- */
+function hexA(hex, a) {
+  var r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+}
+function dotIcon(hex, a, size) {
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '">'
+    + '<circle cx="' + size/2 + '" cy="' + size/2 + '" r="' + (size/2 - 1.5)
+    + '" fill="' + hexA(hex, a) + '" stroke="#ffffff" stroke-width="1.5"/></svg>';
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+function propsTable(p) {
+  var keys = Object.keys(p || {});
+  if (!keys.length) return '<span style="color:#9ca3af">无属性</span>';
+  return '<table class="pt">' + keys.map(function (k) {
+    return '<tr><td class="k">' + k + '</td><td>' + String(p[k]) + '</td></tr>';
+  }).join("") + '</table>';
+}
+function fail(msg) {
+  document.getElementById("meta").innerHTML = '<span style="color:#b91c1c">' + msg + '</span>';
+}
+
+/* ---------- 可调样式状态 ---------- */
+var STYLE = {
+  point: { color: "#ee1111", opacity: 0.85, size: 12 },
+  line:  { color: "#ee1111", opacity: 0.95, width: 3 },
+  poly:  { fill: "#ff6666", fillOpacity: 0.35, border: "#ee1111", borderWidth: 2 }
+};
+
+if (typeof TMap === "undefined") {
+  fail("地图 SDK 加载失败（需网络环境 / WorkBuddy 代理）");
+} else {
+  var BASE_SAT = { type: "satellite", features: ["base", "road"] };
+  var BASE_VEC = { type: "vector", features: ["base", "building3d", "point", "label", "arrow"] };
+
+  var feats = (DATA && DATA.features) || [];
+  var gj = feats.map(function (f) {
+    return { props: f.properties || {}, geomType: f.geometry ? f.geometry.type : "",
+             coords: conv(JSON.parse(JSON.stringify(f.geometry ? f.geometry.coordinates : []))) };
+  });
+
+  var map = new TMap.Map("map", {
+    center: new TMap.LatLng(35, 105), zoom: 4,
+    baseMap: BASE_SAT
+  });
+
+  var LL = function (c) { return new TMap.LatLng(c[1], c[0]); };
+  var pts = [], lines = [], polys = [];
+  gj.forEach(function (f, i) {
+    if (f.geomType === "Point") pts.push({ id: String(i), position: LL(f.coords) });
+    else if (f.geomType === "MultiPoint") f.coords.forEach(function (c, j) {
+      pts.push({ id: String(i) + "_" + j, position: LL(c) }); });
+    else if (f.geomType === "LineString") lines.push({ id: String(i), paths: f.coords.map(LL) });
+    else if (f.geomType === "MultiLineString") f.coords.forEach(function (part, j) {
+      lines.push({ id: String(i) + "_" + j, paths: part.map(LL) }); });
+    else if (f.geomType === "Polygon") polys.push({ id: String(i), paths: f.coords.map(function (r) { return r.map(LL); }) });
+    else if (f.geomType === "MultiPolygon") f.coords.forEach(function (poly, j) {
+      polys.push({ id: String(i) + "_" + j, paths: poly.map(function (r) { return r.map(LL); }) }); });
+  });
+  var propsById = {};
+  gj.forEach(function (f, i) { propsById[String(i)] = f.props; });
+
+  var iw = new TMap.InfoWindow({ map: map, position: map.getCenter(), content: "", enableCustom: false });
+  iw.close();
+  function bindClick(layer) {
+    layer.on("click", function (e) {
+      var id = e.geometry.id.split("_")[0];
+      iw.setPosition(e.latLng);
+      iw.setContent(propsTable(propsById[id]));
+      iw.open();
+    });
+  }
+
+  var mp = null, ml = null, mm = null;
+  function applyStyles() {
+    if (mp) mp.setStyles({ default: new TMap.PolygonStyle({
+      color: hexA(STYLE.poly.fill, STYLE.poly.fillOpacity),
+      borderColor: STYLE.poly.border, borderWidth: STYLE.poly.borderWidth }) });
+    if (ml) ml.setStyles({ default: new TMap.PolylineStyle({
+      color: hexA(STYLE.line.color, STYLE.line.opacity), width: STYLE.line.width }) });
+    if (mm) { var s = STYLE.point;
+      mm.setStyles({ default: new TMap.MarkerStyle({
+        width: s.size, height: s.size, anchor: { x: s.size/2, y: s.size/2 },
+        src: dotIcon(s.color, s.opacity, s.size) }) });
+    }
+  }
+
+  if (polys.length) {
+    mp = new TMap.MultiPolygon({ map: map, geometries: polys,
+      styles: { default: new TMap.PolygonStyle({ color: hexA(STYLE.poly.fill, STYLE.poly.fillOpacity),
+        borderColor: STYLE.poly.border, borderWidth: STYLE.poly.borderWidth }) } });
+    bindClick(mp);
+  }
+  if (lines.length) {
+    ml = new TMap.MultiPolyline({ map: map, geometries: lines,
+      styles: { default: new TMap.PolylineStyle({
+        color: hexA(STYLE.line.color, STYLE.line.opacity), width: STYLE.line.width }) } });
+    bindClick(ml);
+  }
+  if (pts.length) {
+    var s0 = STYLE.point;
+    mm = new TMap.MultiMarker({ map: map, geometries: pts,
+      styles: { default: new TMap.MarkerStyle({ width: s0.size, height: s0.size,
+        anchor: { x: s0.size/2, y: s0.size/2 }, src: dotIcon(s0.color, s0.opacity, s0.size) }) } });
+    bindClick(mm);
+  }
+
+  var bounds = new TMap.LatLngBounds();
+  gj.forEach(function (f) { (function walk(c) {
+    if (typeof c[0] === "number") bounds.extend(LL(c)); else c.forEach(walk);
+  })(f.coords); });
+  if (feats.length) map.fitBounds(bounds, { padding: 60 });
+
+  /* ---------- 底图切换 ---------- */
+  var sw = document.getElementById("baseSwitch");
+  if (typeof map.setBaseMap === "function") {
+    sw.style.display = "flex";
+    var bSat = document.getElementById("btnSat"), bRoad = document.getElementById("btnRoad");
+    bSat.onclick = function () { map.setBaseMap(BASE_SAT); bSat.className = "on"; bRoad.className = ""; };
+    bRoad.onclick = function () { map.setBaseMap(BASE_VEC); bRoad.className = "on"; bSat.className = ""; };
+  }
+
+  /* ---------- 顶栏元信息 + 样式按钮（先于面板初始化，核心 UI 不被面板问题拖死） ---------- */
+  var types = {};
+  feats.forEach(function (f) {
+    var t = f.geometry ? f.geometry.type : "?"; types[t] = (types[t] || 0) + 1;
+  });
+  var typeStr = Object.keys(types).map(function (k) { return k + "×" + types[k]; }).join("，");
+  document.getElementById("meta").innerHTML = "<span>" + typeStr + "</span><span>WGS84</span>";
+
+  var btnStyle = document.getElementById("btnStyle"), panel = document.getElementById("stylePanel");
+  function togglePanel() {
+    var show = !panel.classList.contains("show");
+    panel.classList.toggle("show", show);
+    btnStyle.classList.toggle("on", show);
+  }
+  if (feats.length) {
+    btnStyle.style.display = "";
+    btnStyle.onclick = togglePanel;
+  }
+
+  /* ---------- 样式面板（只渲染存在的几何类型分区；初始化失败不影响地图） ---------- */
+  try {
+  function row(label, inner) {
+    return '<div class="row"><label>' + label + '</label>' + inner + '</div>';
+  }
+  function colorInput(id, v) {
+    return '<input type="color" id="' + id + '" value="' + v + '">';
+  }
+  function rangeInput(id, min, max, step, v) {
+    return '<input type="range" id="' + id + '" min="' + min + '" max="' + max
+      + '" step="' + step + '" value="' + v + '"><span class="val" id="' + id + 'v"></span>';
+  }
+  var html = "";
+  if (pts.length) html += '<div class="sec"><div class="name">'
+    + '<span class="geom" style="background:#ee1111;border-radius:50%"></span>点 · ' + pts.length + '</div>'
+    + row("颜色", colorInput("pColor", STYLE.point.color) + rangeInput("pOpacity", 0, 100, 1, Math.round(STYLE.point.opacity*100)))
+    + row("大小", rangeInput("pSize", 6, 30, 1, STYLE.point.size)) + '</div>';
+  if (lines.length) html += '<div class="sec"><div class="name">'
+    + '<span class="geom" style="background:#ee1111;height:2px;margin-top:4px"></span>线 · ' + lines.length + '</div>'
+    + row("颜色", colorInput("lColor", STYLE.line.color) + rangeInput("lOpacity", 0, 100, 1, Math.round(STYLE.line.opacity*100)))
+    + row("线宽", rangeInput("lWidth", 1, 12, 0.5, STYLE.line.width)) + '</div>';
+  if (polys.length) html += '<div class="sec"><div class="name">'
+    + '<span class="geom" style="background:#ff6666;transform:skewX(-15deg)"></span>面 · ' + polys.length + '</div>'
+    + row("填充", colorInput("yFill", STYLE.poly.fill) + rangeInput("yFillOp", 0, 100, 1, Math.round(STYLE.poly.fillOpacity*100)))
+    + row("描边", colorInput("yBorder", STYLE.poly.border) + rangeInput("yBorderW", 0, 10, 0.5, STYLE.poly.borderWidth)) + '</div>';
+  document.getElementById("panelBody").innerHTML = html;
+
+  ["pColor","lColor","yFill","yBorder"].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", function () {
+      if (id === "pColor") STYLE.point.color = el.value;
+      if (id === "lColor") STYLE.line.color = el.value;
+      if (id === "yFill") STYLE.poly.fill = el.value;
+      if (id === "yBorder") STYLE.poly.border = el.value;
+      applyStyles();
+    });
+  });
+  function bindRange(id, fmt, set) {
+    var el = document.getElementById(id), lv = document.getElementById(id + "v");
+    if (!el) return;
+    var show = function () { var v = parseFloat(el.value);
+      lv.textContent = fmt(v); set(v); applyStyles(); };
+    el.addEventListener("input", show); show();
+  }
+  var pct = function (v) { return v + "%"; };
+  bindRange("pOpacity", pct, function (v) { STYLE.point.opacity = v / 100; });
+  bindRange("pSize", function (v) { return v + "px"; }, function (v) { STYLE.point.size = v; });
+  bindRange("lOpacity", pct, function (v) { STYLE.line.opacity = v / 100; });
+  bindRange("lWidth", function (v) { return v + "px"; }, function (v) { STYLE.line.width = v; });
+  bindRange("yFillOp", pct, function (v) { STYLE.poly.fillOpacity = v / 100; });
+  bindRange("yBorderW", function (v) { return v + "px"; }, function (v) { STYLE.poly.borderWidth = v; });
+  } catch (err) {
+    btnStyle.style.display = "none";
+    if (typeof console !== "undefined") console.warn("样式面板初始化失败:", err);
+  }
+}
+</script>
+</body>
+</html>
